@@ -30,8 +30,8 @@ multiple Tensor data types; see the `NewTensor` or `NewEmptyTensor` functions.
 Note on onnxruntime Library Versions
 ------------------------------------
 
-At the time of writing, this library uses version 1.15.1 of the onnxruntime
-C API headers.  So, it will probably only work with version 1.15.1 of the
+At the time of writing, this library uses version 1.18.0 of the onnxruntime
+C API headers.  So, it will probably only work with version 1.18.0 of the
 onnxruntime shared libraries, as well.  If you need to use a different version,
 or if I get behind on updating this repository, updating or changing the
 onnxruntime version should be fairly easy:
@@ -43,13 +43,19 @@ onnxruntime version should be fairly easy:
     file with the version corresponding to the onnxruntime version you wish to
     use.
 
+ 3. (If you care about DirectML support) Verify that the entries in the
+    `DummyOrtDMLAPI` struct in `onnxruntime_wrapper.c` match the order in which
+    they appear in the `OrtDmlApi` struct from the `dml_provider_factory.h`
+    header in the official repo.  See the comment on this struct in
+    `onnxruntime_wrapper.c` for more information.
+
 Note that both the C API header and the shared library files are available to
 download from the releases page in the
 [official repo](https://github.com/microsoft/onnxruntime). Download the archive
 for the release you want to use, and extract it. The header file is located in
 the "include" subdirectory, and the shared library will be located in the "lib"
 subdirectory. (On Linux systems, you'll need the version of the .so with the
-appended version numbers, e.g., `libonnxruntime.so.1.15.1`, and _not_ the
+appended version numbers, e.g., `libonnxruntime.so.1.18.0`, and _not_ the
 `libonnxruntime.so`, which is just a symbolic link.)  The archive will contain
 several other files containing C++ headers, debug symbols, and so on, but you
 shouldn't need anything other than the single onnxruntime shared library and
@@ -70,7 +76,8 @@ few lines of the following example.
 Note that if you want to use CUDA, you'll need to be using a version of the
 onnxruntime shared library with CUDA support, as well as be using a CUDA
 version supported by the underlying version of your onnxruntime library. For
-example, version 1.15.1 of the onnxruntime library only supports CUDA 11.8. See
+example, version 1.18.0 of the onnxruntime library only supports CUDA versions
+11.8 or 12.4. See
 [the onnxruntime CUDA support documentation](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
 for more specifics.
 
@@ -98,15 +105,23 @@ import (
 )
 
 func main() {
-    // This line may be optional, by default the library will try to load
+    // This line _may_ be optional; by default the library will try to load
     // "onnxruntime.dll" on Windows, and "onnxruntime.so" on any other system.
+    // For stability, it is probably a good idea to always set this explicitly.
     ort.SetSharedLibraryPath("path/to/onnxruntime.so")
 
     err := ort.InitializeEnvironment()
+    if err != nil {
+        panic(err)
+    }
     defer ort.DestroyEnvironment()
 
-    // To make it easier to work with the C API, this library requires the user
-    // to create all input and output tensors prior to creating the session.
+    // For a slight performance boost and convenience when re-using existing
+    // tensors, this library expects the user to create all input and output
+    // tensors prior to creating the session. If this isn't ideal for your use
+    // case, see the DynamicAdvancedSession type in the documnentation, which
+    // allows input and output tensors to be specified when calling Run()
+    // rather than when initializing a session.
     inputData := []float32{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9}
     inputShape := ort.NewShape(2, 5)
     inputTensor, err := ort.NewTensor(inputShape, inputData)
@@ -118,16 +133,19 @@ func main() {
 
     session, err := ort.NewAdvancedSession("path/to/network.onnx",
         []string{"Input 1 Name"}, []string{"Output 1 Name"},
-        []ArbitraryTensor{inputTensor}, []ArbitraryTensor{outputTensor}, nil)
+        []ort.Value{inputTensor}, []ort.Value{outputTensor}, nil)
     defer session.Destroy()
 
     // Calling Run() will run the network, reading the current contents of the
-    // input tensors and modifying the contents of the output tensors. Simply
-    // modify the input tensor's data (available via inputTensor.GetData())
-    // before calling Run().
+    // input tensors and modifying the contents of the output tensors.
     err = session.Run()
 
+    // Get a slice view of the output tensor's data.
     outputData := outputTensor.GetData()
+
+    // If you want to run the network on a different input, all you need to do
+    // is modify the input tensor data (available via inputTensor.GetData())
+    // and call Run() again.
 
     // ...
 }
@@ -155,22 +173,23 @@ Navigate to this directory and run `go test -v`, or optionally
 accelerator support will be skipped on systems or onnxruntime builds that don't
 support them.
 
-Currently, this repository includes a copy of `onnxruntime.dll` for AMD64
-Windows, and `onnxruntime_arm64.so` for ARM64 Linux in its `test_data`
-directory, in order to (hopefully!) allow all tests to pass on those systems
-without users needing to copy additional libraries beyond cloning this
-repository. In the future, however, this may change if support for more systems
-are added or removed.
+Currently, this repository includes a copy of the onnxruntime shared libraries
+for a few systems, including AMD64 windows, ARM64 Linux, and ARM64 darwin.
+These should allow tests to pass on those systems without users needing to copy
+additional libraries beyond cloning this repository. In the future, however,
+this may change if support for more systems are added or removed.
 
 You may want to use a different version of the `onnxruntime` shared library for
 a couple reasons.  In particular:
 
  1. The included shared library copies do not include support for CUDA or other
-    accelerated execution providers, so CUDA-related tests will always fail.
+    accelerated execution providers, so CUDA-related tests will always be
+    skipped if you use the default libraries in this repo.
 
- 2. Many systems, including AMD64 and i386 Linux, and ARM64 or x86 osx, do not
-    have shared libraries included in test_data in the first place. (At least
-    for now.)
+ 2. Many systems, including AMD64 and i386 Linux, and x86 osx, do not currently
+    have shared libraries included in `test_data/` in the first place. (I would
+    like to keep this directory, and the overall repo, smaller by keeping the
+    number of shared libraries small.)
 
 If these or other reasons apply to you, the test code will check the
 `ONNXRUNTIME_SHARED_LIBRARY_PATH` environment variable before attempting to
@@ -178,4 +197,27 @@ load a library from `test_data/`. So, if you are using one of these systems or
 want accelerator-related tests to run, you should set the environment variable
 to the path to the onnxruntime shared library.  Afterwards, `go test -v` should
 run and pass.
+
+
+Training API Support
+--------------------
+
+This wrapper supports the onnxruntime training API on limited platforms. See
+the `NewTrainingSession` and associated data types or functions to use it. So
+far, the training API has only been tested on Linux, on `x86_64` architectures.
+
+If you are not sure whether your platform or build of onnxruntime supports
+training, you can call `onnxruntime_go.IsTrainingSupported()`, which will
+return `true` if training is supported on your system.
+
+*The training API is not currently supported on Windows.*  While training
+support has simply not been tested on other Linux and Mac systems, it is
+currently known to be unsupported on Windows.  This is due to
+`NewTrainingSession` fundamentally requiring filesystem paths, even within the
+C API.  This is difficult to handle in Windows, since the Windows onnxruntime
+DLLs require wide-character strings (unlike the Linux and osx shared
+libraries).  This means that calling these functions on Windows would require
+converting UTF-8 Go `string`s to compatible strings when invoking the C API on
+Windows only. This should possible, but it is simply not a development priority
+at the moment.
 
